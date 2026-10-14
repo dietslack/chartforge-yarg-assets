@@ -39,6 +39,16 @@ let _yargLaneW = 1;
 // One clock for every YARG note material, including clones (see _yargBind)
 const _yargTime = { value: 0 };
 
+// The frets' point lights (see _yargFretAnimate), shared by every YARG note
+// and fret material so they light whatever is near the strikeline, as in
+// YARG. Two per lane, hit and sustain. Position: xyz in the scene, w the
+// scene-to-YARG scale (1 / k). Color: rgb linear color * intensity, a 1 / range^2
+// in YARG units. Off when the color is black.
+const _YARG_PL_MAX = 16;
+const _yargPLPos = { value: Array.from({ length: _YARG_PL_MAX }, () => new THREE.Vector4()) };
+const _yargPLCol = { value: Array.from({ length: _YARG_PL_MAX }, () => new THREE.Vector4()) };
+const _YARG_PL_UNIFORMS = { uYargPLPos: _yargPLPos, uYargPLCol: _yargPLCol };
+
 const _yargTexCache = {};
 function _yargTex(name) {
   if (_yargTexCache[name]) return _yargTexCache[name];
@@ -71,8 +81,10 @@ const _YARG_VERT = `
   varying vec3 vNormal;
   varying vec3 vViewDir;
   varying float vSeed;
+  varying vec3 vWorldPos;
   void main() {
     vUv = uv;
+    vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
     vNormal = normalize(normalMatrix * normal);
     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
     vViewDir = normalize(-mvPosition.xyz);
@@ -93,6 +105,10 @@ const _YARG_VERT = `
 // the falloff of the light across faces turned away from it.
 // Axes: Unity's z runs away from the camera, the scene's toward it.
 const _YARG_LIGHTING = `
+  #define YARG_PL_MAX ${_YARG_PL_MAX}
+  uniform vec4 uYargPLPos[YARG_PL_MAX];
+  uniform vec4 uYargPLCol[YARG_PL_MAX];
+  varying vec3 vWorldPos;
   vec3 yargLinear(vec3 c) {
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
   }
@@ -119,6 +135,14 @@ const _YARG_LIGHTING = `
     return max(l00 - l20 + l1y * n.y + l1z * n.z + l2yz * n.y * n.z
       + 3.0 * l20 * n.z * n.z + l22 * (n.x * n.x - n.y * n.y), 0.0);
   }
+  // URP's GGX highlight for light direction L
+  float yargSpecTerm(vec3 N, vec3 L, vec3 V, float rough, float r2) {
+    vec3 H = normalize(L + V);
+    float NoH = clamp(dot(N, H), 0.0, 1.0);
+    float LoH = clamp(dot(L, H), 0.0, 1.0);
+    float d = NoH * NoH * (r2 - 1.0) + 1.00001;
+    return r2 / (d * d * max(0.1, LoH * LoH) * (rough * 4.0 + 2.0));
+  }
   // URP Lit, metallic workflow. specZero: a specular-workflow material with
   // specular color 0 (RectangularNote): all diffuse, no highlight.
   // N, V in view space; albedo and emission linear; returns display color.
@@ -131,15 +155,22 @@ const _YARG_LIGHTING = `
     float pr = 1.0 - smoothness;
     float rough = max(pr * pr, 0.0078125);
     float r2 = rough * rough;
-    vec3 H = normalize(L + V);
     float NoL = clamp(dot(N, L), 0.0, 1.0);
-    float NoH = clamp(dot(N, H), 0.0, 1.0);
-    float LoH = clamp(dot(L, H), 0.0, 1.0);
-    float d = NoH * NoH * (r2 - 1.0) + 1.00001;
-    float specTerm = r2 / (d * d * max(0.1, LoH * LoH) * (rough * 4.0 + 2.0));
     vec3 Nw = (vec4(N, 0.0) * viewMatrix).xyz;
     vec3 col = yargAmbient(vec3(Nw.x, Nw.y, -Nw.z)) * diffuse
-      + (diffuse + specular * specTerm) * sun * NoL + emission;
+      + (diffuse + specular * yargSpecTerm(N, L, V, rough, r2)) * sun * NoL + emission;
+    // Point lights, with URP's falloff: inverse square, eased to 0 at range
+    for (int i = 0; i < YARG_PL_MAX; i++) {
+      vec4 lc = uYargPLCol[i];
+      if (lc.r + lc.g + lc.b <= 0.0) continue;
+      vec3 dl = uYargPLPos[i].xyz - vWorldPos;
+      float d2 = dot(dl, dl) * uYargPLPos[i].w * uYargPLPos[i].w;
+      float f = clamp(1.0 - (d2 * lc.a) * (d2 * lc.a), 0.0, 1.0);
+      float atten = f * f / max(d2, 0.0001);
+      vec3 Lp = normalize((viewMatrix * vec4(dl, 0.0)).xyz);
+      float NoLp = clamp(dot(N, Lp), 0.0, 1.0);
+      col += (diffuse + specular * yargSpecTerm(N, Lp, V, rough, r2)) * lc.rgb * (atten * NoLp);
+    }
     return yargSRGB(yargACES(col));
   }`;
 
@@ -245,7 +276,7 @@ const _YARG_FRAG = _YARG_LIGHTING + `
 // Shared uniform objects survive cloning: ShaderMaterial.clone() deep-copies
 // uniforms, which would leave a clone with its own stopped clock and with
 // texture copies that are never uploaded.
-const _YARG_SHARED_UNIFORMS = ['uMap', 'uShineMap', 'uNoiseTex', 'uTime'];
+const _YARG_SHARED_UNIFORMS = ['uMap', 'uShineMap', 'uNoiseTex', 'uTime', 'uYargPLPos', 'uYargPLCol'];
 function _yargBind(m) {
   Object.defineProperty(m, 'opacity', {
     get() { return m.uniforms.opacity.value; },
@@ -288,6 +319,7 @@ function _yargMat(key, p) {
       uSmoothness: { value: p.smoothness || 0 },
       uMetallic: { value: p.metallic || 0 },
       uTime: _yargTime,
+      ..._YARG_PL_UNIFORMS,
       opacity: { value: 1.0 },
     },
     vertexShader: _YARG_VERT,
@@ -458,7 +490,6 @@ const _YARG_FRET_FRAG = _YARG_LIGHTING + `
   uniform float uEmissiveIntensity;
   uniform float uKind;
   uniform float uFade;
-  uniform vec3 uLight;
   varying vec2 vUv;
   varying vec3 vNormal;
   varying vec3 vViewDir;
@@ -474,17 +505,15 @@ const _YARG_FRET_FRAG = _YARG_LIGHTING + `
     vec3 tex = yargLinear(texture2D(uMap, vUv).rgb);
     vec3 color = yargLinear(uColor);
     vec3 albedo = tex;
+    vec3 emission = vec3(0.0);
     if (uKind > 2.5) {
       // Kick fret (KickFret.mat, YargLit): base map * color
       albedo = tex * color;
     } else if (uKind > 1.5) {
       // Inner: base = lerp(texture, color, Fade), emission = lerp(black,
       // color, Fade) * 5. Fade is 1 while the fret is "pressed", else 0.
-      // In YARG's HDR that emission makes the pad a flat, fully bright version
-      // of its color. Through the tonemapper, 5x the color would wash toward
-      // white and shift the hue (green to yellow), so the pad goes straight to
-      // the color at full brightness instead (see the end of main).
       albedo = mix(tex, color, uFade);
+      emission = color * 5.0 * uFade;
     } else if (uKind > 0.5) {
       // Outer: color * texture, with the hue-shifted shine painted over it
       albedo = color * tex;
@@ -493,17 +522,9 @@ const _YARG_FRET_FRAG = _YARG_LIGHTING + `
       albedo = mix(albedo, shineCol, clamp(shine.a, 0.0, 1.0));
       // (no emission: the frame itself does not change on a hit in YARG)
     }
-    vec3 N = normalize(vNormal);
-    // The effects' point lights sit just above the fret: they light its
-    // upward faces in their color
-    vec3 lit = albedo * uLight * (0.35 + 0.65 * max((vec4(N, 0.0) * viewMatrix).y, 0.0));
     // All four are metallic 0 and smoothness 0 (FretMetal.mat, KickFret.mat,
     // and the outer and inner graphs)
-    vec3 col = yargShade(albedo, lit, 0.0, 0.0, false, N, normalize(vViewDir));
-    if (uKind > 1.5 && uKind < 2.5) {
-      vec3 bright = uColor / max(max(uColor.r, max(uColor.g, uColor.b)), 0.001);
-      col = mix(col, mix(bright, vec3(1.0), 0.12), uFade);
-    }
+    vec3 col = yargShade(albedo, emission, 0.0, 0.0, false, normalize(vNormal), normalize(vViewDir));
     gl_FragColor = vec4(col, 1.0);
   }`;
 
@@ -518,7 +539,7 @@ function _yargFretMat(kind, colorHex) {
       uEmissiveIntensity: { value: 0.3 },
       uKind: { value: kind },
       uFade: { value: 0 },
-      uLight: { value: new THREE.Color(0x000000) },
+      ..._YARG_PL_UNIFORMS,
     },
     vertexShader: _YARG_VERT,
     fragmentShader: _YARG_FRET_FRAG,
@@ -726,9 +747,9 @@ function _yargUpdateKick(visible, t, kickColor) {
 // Unity's animator and particle systems are replaced by the small systems
 // below, using the clips' key values and the particle systems' settings
 // (counts, lifetimes, speeds, sizes, colors, simulation speed). Positions are
-// in YARG track units times the fret's scale k. YARG's point lights are
-// applied to the fret's own shading (uLight), and its miss / pressed effects
-// are not reproduced (the editor has no misses).
+// in YARG track units times the fret's scale k. YARG's point lights are real
+// lights here too (_yargFretLights), and its miss effects are not reproduced
+// (the editor has no misses).
 // ============================================================
 // Peak height of the colored part: its local z offset in the clips, times the
 // fret's z scale (8.02) and the Model object's y scale (1.29), in metres
@@ -773,7 +794,7 @@ function _yargRock(e) {
 //              main view, which spawns its own)
 function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scaleX, x, color, fx) {
   let st = _yargFretStates[key];
-  if (!st) st = _yargFretStates[key] = { prev: [], oprev: [], hitAt: [], cymAt: [], emit: [] };
+  if (!st) st = _yargFretStates[key] = { prev: [], oprev: [], hitAt: [], hitColor: [], cymAt: [], emit: [] };
   const k = fret.k;
   const floorY = fret.floorY, z = fret.z;
   // Effects are tagged with the plain view name, which is what the per-panel
@@ -784,6 +805,7 @@ function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scal
   // One trigger per note. The first frame of a view only records the counts.
   if (st.prev[lane] !== undefined && hits !== st.prev[lane]) {
     st.hitAt[lane] = now;
+    st.hitColor[lane] = color;
     if (_yargCymHit[lane] && fx) st.cymAt[lane] = now;
     if (fx) _yargFxHit(fxKey, x, floorY, z, k, color);
   }
@@ -791,6 +813,7 @@ function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scal
   // An open note pops every fret, with the open note's color
   if (st.oprev[lane] !== undefined && opens !== st.oprev[lane]) {
     st.hitAt[lane] = now;
+    st.hitColor[lane] = _YARG_OPEN_FX_COLOR;
     if (fx) _yargFxHit(fxKey, x, floorY, z, k, _YARG_OPEN_FX_COLOR, true);
   }
   st.oprev[lane] = opens;
@@ -819,14 +842,8 @@ function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scal
   const iu = fret.innerMat.uniforms;
   iu.uFade.value = pressed ? 1 : 0;
   iu.uColor.value.set(color);
-  // Point lights: the hit light (intensity 4, fading at 100 a second) and the
-  // sustain light (intensity 3, flickering on two sines), in the lane color
-  let light = Math.max(0, 4 - e * 100);
-  if (sustained) light = Math.max(light, 3 + Math.sin(now * 30) * 0.075 + Math.sin(now * 40) * 0.075);
-  light *= 0.12;
-  for (const mat of [fret.borderMat, fret.innerMat, fret.bottomBorderMat]) {
-    mat.uniforms.uLight.value.set(color).multiplyScalar(light);
-  }
+  _yargFretLights(lane, x, floorY, z, k, e < 0.1 ? st.hitColor[lane] : null,
+    sustained ? 3 + Math.sin(now * 30) * 0.075 + Math.sin(now * 40) * 0.075 : 0, color);
 
   // Sustain Effects: 25 particles a second at simulation speed 1.5
   if (sustained && fx) {
@@ -844,6 +861,32 @@ function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scal
   } else if (!sustained) {
     st.emit[lane] = 0;
   }
+}
+
+// The point lights of RectangularFret.prefab, two slots per lane. Each view
+// poses its frets from lane 0 up just before it is drawn, so lane 0 clears
+// what the previous view left.
+//   Hit Effects / Open Hit Effects light   intensity 4, range 0.3, 0.147 up
+//       and 0.0156 toward the player; on for 0.1 s ("Normal" mode, its
+//       _fadeOutRate of 100 is a duration in ms), in the hit's color
+//   Sustain Effects light   intensity 3, range 0.24, 0.11 up and 0.043 away
+//       from the player; flickers on two sines while a sustain is held
+// hitColor: null when the hit light is off; sustain: the sustain intensity.
+const _yargPLTmp = new THREE.Color();
+function _yargFretLights(lane, x, floorY, z, k, hitColor, sustain, color) {
+  if (lane === 0) for (const c of _yargPLCol.value) c.set(0, 0, 0, 0);
+  const i = lane * 2;
+  if (i + 1 >= _YARG_PL_MAX) return;
+  const set = (slot, hex, intensity, range, up, toward) => {
+    _yargPLTmp.set(hex);
+    // the light's color is sRGB; lighting is linear
+    const lin = (v) => v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    _yargPLCol.value[slot].set(lin(_yargPLTmp.r) * intensity, lin(_yargPLTmp.g) * intensity,
+      lin(_yargPLTmp.b) * intensity, 1 / (range * range));
+    _yargPLPos.value[slot].set(x, floorY + up * k, z + toward * k, 1 / k);
+  };
+  if (hitColor !== null && hitColor !== undefined) set(i, hitColor, 4, 0.3, 0.147, 0.0156);
+  if (sustain > 0) set(i + 1, color, sustain, 0.24, 0.11, -0.043);
 }
 
 const _YARG_FX_MAX = 2400;
