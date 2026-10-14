@@ -70,9 +70,12 @@ e417ab65599ceac0528269538fedef102e12db42271688efccc4a4dbd9349283  ./Assets/Art/T
 fd05d6fe3e4f21757918ba8b565acfa689ffd4db612b5b922f068e0c405a3099  ./Assets/Prefabs/Gameplay/Visual/BaseVisual.prefab
 57a5f1ded6df1c94fde1a812597598ab2d3d4b51c0b6d98492b3f269d376d1b9  ./Assets/Prefabs/Gameplay/Visual/Themes/RectangularFret.prefab
 6df6a0bcb4312a72882b98ce6b6aa593bbb736be0ff58eef75089501f31016b6  ./Assets/Prefabs/Gameplay/Visual/Themes/RectangularTheme.prefab
+353df1574be4fc756a827852161324c9ea34949cfb76097c9b13ad3664d22053  ./Assets/Scenes/Gameplay/LightingData.asset
+66485881145dee9781911b428a0210343827f3db8e35b492018240df6374343a  ./Assets/Scenes/Gameplay.unity
 82ff4ba91d17ce0720728c254c6ab81079ee1b269fd2b7703770465fe4fb57fe  ./Assets/Script/Gameplay/Visuals/Fret/FretArray.cs
 3b284cdaf095046e8d95dd99ed0d5df360378120f876aeef6d294be0003886bd  ./Assets/Script/Gameplay/Visuals/Fret/Fret.cs
 357cf59aae887a03f24209f49a07ca85ff6569f8c1c21bd0dc09de3bc43d24f6  ./Assets/Script/Gameplay/Visuals/Fret/KickFret.cs
 fdd84914450fb418a319209a6ea96802cb31097f36fc1f7675b24ac8ca504cd0  ./Assets/Script/Gameplay/Visuals/Fret/KickFretFlash.cs
 73ae294c274e992341a9be8a13eee4c143e053962bd52eb8cb0d7f99048215e1  ./Assets/Script/Helpers/Authoring/EffectLight.cs
 b7023101bf352cb8d400c68502560723ffc2d974d4383856d26d42d13834a354  ./Assets/Script/Helpers/Authoring/EffectParticle.cs
+05c24a0575a2fff123a104e4a6386c874c44d0b957bc4c5a9fea36746fe3d97e  ./Assets/Settings/PostProcessProfile.asset

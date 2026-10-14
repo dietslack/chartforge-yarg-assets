@@ -38,6 +38,7 @@ source of the LGPL-covered parts.
 - Drum kick frets and kick flash: `Assets/Art/Meshes/Gameplay/Frets/RectangularKickFret.fbx`, `RectangularKickFret.png`, `KickFret.mat`, `KickFlash.mat`, `Assets/Art/Shaders/Gameplay/KickFlash.shadergraph`, `Assets/Art/Textures/Gameplay/Particles/KickFlash/KickFlash1.png` to `KickFlash6.png`, and `KickFretHit.anim` / `KickFretIdle.anim`
 - Fret animations and effects: `FretHit.anim`, `FretSustained.anim`, `FretCymbalHit.anim`, `FretIdle.anim`, `FretControllerGuitar.controller`, `Assets/Art/Textures/Gameplay/Particles/FretHit_Flash.png`, and the particle materials `FretHit_Flash.mat`, `ParticlesUnlit.mat`, `ParticleTransparent.mat`, `GlassParticles.mat` (the particle systems themselves are in `RectangularFret.prefab`)
 - Reference only (values were read from them, no code was copied): `Assets/Script/Gameplay/Visuals/Fret/Fret.cs`, `FretArray.cs`, `KickFret.cs`, `KickFretFlash.cs`, `Assets/Script/Helpers/Authoring/EffectParticle.cs`, `EffectLight.cs`, and `Assets/Prefabs/Gameplay/Visual/BaseVisual.prefab` (kick fret positions, flash quad placement and frame order)
+- Lighting, reference only: `Assets/Scenes/Gameplay.unity` (the directional light, ambient and reflection settings), `Assets/Scenes/Gameplay/LightingData.asset` (the baked ambient probe whose coefficients the note shaders use) and `Assets/Settings/PostProcessProfile.asset` (ACES tonemapping)
 - `Assets/Art/Materials/Gameplay/Notes/`: the `.mat` files whose settings were used (`NoteMetal`, `NoteGlow`, `NoteMiddle`, `NoteHOPOGlow`, `NoteTapCenter`, `CymbalMiddle`, `CymbalMetal`, `CymbalGlow`, `CymbalGhostCenter`, `KickNoteMetal`, `KickNoteMiddle`, `OpenMetal`, `OpenMiddle`, `OpenHopoMetal`, `OpenHopoMiddle`)
 - `Assets/Art/Meshes/Obsolete/`: `Open.prefab`, `OpenHOPO.prefab` (YARG's open notes: scale and materials) and `Notes.blend` (the mesh they reference; not converted, see below)
 - `Assets/Art/Shaders/Gameplay/Notes/RectangularNote.shadergraph` and `Assets/Art/Shaders/Gameplay/YargLit.shadergraph`
@@ -49,7 +50,7 @@ source of the LGPL-covered parts.
 | --- | --- | --- |
 | `convert_yarg_notes.py` | Converts the FBX meshes and PNG textures into `yargnotes-data.js`. | not shipped (build tool) |
 | `yargnotes-data.js` | Generated note geometry and embedded textures. | `app/js/yargnotes-data.js` |
-| `yargnotes.js` | three.js port of the five shader graphs, the material settings, and the code that builds notes and strikeline frets from the models. | `app/js/yargnotes.js` |
+| `yargnotes.js` | three.js port of the five shader graphs, the material settings, YARG's gameplay scene lighting with URP's Lit shading and ACES tonemapping, and the code that builds notes and strikeline frets from the models. | `app/js/yargnotes.js` |
 
 In the released app, the two shipped files are minified and obfuscated along
 with the rest of the app's scripts. The readable source of both is in
