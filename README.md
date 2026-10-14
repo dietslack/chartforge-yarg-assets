@@ -50,7 +50,7 @@ source of the LGPL-covered parts.
 | --- | --- | --- |
 | `convert_yarg_notes.py` | Converts the FBX meshes and PNG textures into `yargnotes-data.js`. | not shipped (build tool) |
 | `yargnotes-data.js` | Generated note geometry and embedded textures. | `app/js/yargnotes-data.js` |
-| `yargnotes.js` | three.js port of the five shader graphs, the material settings, YARG's gameplay scene lighting with URP's Lit shading and ACES tonemapping, and the code that builds notes and strikeline frets from the models. | `app/js/yargnotes.js` |
+| `yargnotes.js` | three.js port of the five shader graphs, the material settings, YARG's gameplay scene lighting and the frets' point lights with URP's Lit shading and ACES tonemapping, and the code that builds notes and strikeline frets from the models. | `app/js/yargnotes.js` |
 
 In the released app, the two shipped files are minified and obfuscated along
 with the rest of the app's scripts. The readable source of both is in
