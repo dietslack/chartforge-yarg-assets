@@ -19,8 +19,9 @@
 //   Material settings     the values of the .mat files in Assets/Art/Materials/
 //                         Gameplay/Notes (named beside each one below)
 //
-// Unity's lit pipeline is replaced by one fixed key light plus ambient, like
-// the other note shaders in render.js.
+//   Lighting              YARG's gameplay scene (Assets/Scenes/Gameplay.unity,
+//                         its LightingData.asset and PostProcessProfile) with
+//                         URP's Lit shading, see _YARG_LIGHTING
 // ============================================================
 
 // Set per frame in renderNotes(): the instrument draws YARG notes (5-fret and
@@ -81,9 +82,70 @@ const _YARG_VERT = `
     gl_Position = projectionMatrix * mvPosition;
   }`;
 
+// The lighting of YARG's gameplay scene (Assets/Scenes/Gameplay.unity) and
+// URP's Lit BRDF, shared by the note and fret shaders. YARG works in linear
+// color: textures and colors are decoded from sRGB, lit, tonemapped with ACES
+// (its PostProcessProfile) and encoded again. The scene has one directional
+// light (intensity 2 at 7000 K, from above and behind the camera), ambient
+// from its baked sky probe (LightingData.asset), and no reflection probe:
+// its default reflection is "Custom" with no cubemap, so surfaces mirror
+// nothing. The metal's look is its painted texture, the light's highlight and
+// the falloff of the light across faces turned away from it.
+// Axes: Unity's z runs away from the camera, the scene's toward it.
+const _YARG_LIGHTING = `
+  vec3 yargLinear(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+  }
+  vec3 yargSRGB(vec3 c) {
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+  }
+  // ACES tonemapping (Stephen Hill's fit of the RRT and sRGB ODT)
+  vec3 yargACES(vec3 c) {
+    const mat3 inM = mat3(0.59719, 0.07600, 0.02840, 0.35458, 0.90834, 0.13383, 0.04823, 0.01566, 0.83777);
+    const mat3 outM = mat3(1.60475, -0.10208, -0.00327, -0.53108, 1.10813, -0.07276, -0.07367, -0.00605, 1.07602);
+    c = inM * c;
+    c = (c * (c + 0.0245786) - 0.000090537) / (c * (0.983729 * c + 0.4329510) + 0.238081);
+    return clamp(outM * c, 0.0, 1.0);
+  }
+  // The scene's ambient probe, evaluated as URP's SampleSH does. n is a world
+  // direction in Unity's axes.
+  vec3 yargAmbient(vec3 n) {
+    vec3 l00 = vec3(0.1813, 0.2269, 0.3074);
+    vec3 l1y = vec3(-0.0056, 0.0412, 0.1266);
+    vec3 l1z = vec3(-0.0147, -0.0231, -0.0398);
+    vec3 l2yz = vec3(-0.0116, -0.0185, -0.0331);
+    vec3 l20 = vec3(0.0126, 0.0177, 0.0225);
+    vec3 l22 = vec3(0.0240, 0.0329, 0.0382);
+    return max(l00 - l20 + l1y * n.y + l1z * n.z + l2yz * n.y * n.z
+      + 3.0 * l20 * n.z * n.z + l22 * (n.x * n.x - n.y * n.y), 0.0);
+  }
+  // URP Lit, metallic workflow. specZero: a specular-workflow material with
+  // specular color 0 (RectangularNote): all diffuse, no highlight.
+  // N, V in view space; albedo and emission linear; returns display color.
+  vec3 yargShade(vec3 albedo, vec3 emission, float metallic, float smoothness, bool specZero, vec3 N, vec3 V) {
+    vec3 L = normalize((viewMatrix * vec4(-0.18726, 0.71939, 0.66889, 0.0)).xyz);
+    vec3 sun = vec3(0.95, 0.95, 1.0) * 2.0;
+    float omr = specZero ? 1.0 : 0.96 * (1.0 - metallic);
+    vec3 diffuse = albedo * omr;
+    vec3 specular = specZero ? vec3(0.0) : mix(vec3(0.04), albedo, metallic);
+    float pr = 1.0 - smoothness;
+    float rough = max(pr * pr, 0.0078125);
+    float r2 = rough * rough;
+    vec3 H = normalize(L + V);
+    float NoL = clamp(dot(N, L), 0.0, 1.0);
+    float NoH = clamp(dot(N, H), 0.0, 1.0);
+    float LoH = clamp(dot(L, H), 0.0, 1.0);
+    float d = NoH * NoH * (r2 - 1.0) + 1.00001;
+    float specTerm = r2 / (d * d * max(0.1, LoH * LoH) * (rough * 4.0 + 2.0));
+    vec3 Nw = (vec4(N, 0.0) * viewMatrix).xyz;
+    vec3 col = yargAmbient(vec3(Nw.x, Nw.y, -Nw.z)) * diffuse
+      + (diffuse + specular * specTerm) * sun * NoL + emission;
+    return yargSRGB(yargACES(col));
+  }`;
+
 // uNoisy > 0.5: RectangularNote.shadergraph (the colored middle).
 // otherwise:    YargLit.shadergraph (base map * color, optional shine/emission).
-const _YARG_FRAG = `
+const _YARG_FRAG = _YARG_LIGHTING + `
   uniform sampler2D uMap;
   uniform sampler2D uShineMap;
   uniform sampler2D uNoiseTex;
@@ -100,7 +162,7 @@ const _YARG_FRAG = `
   uniform float uEmission;
   uniform float uEmissionMap;
   uniform float uSmoothness;
-  uniform float uSpecular;
+  uniform float uMetallic;
   uniform float uTime;
   uniform float opacity;
   varying vec2 vUv;
@@ -133,12 +195,6 @@ const _YARG_FRAG = `
     float d2 = dot(delta, delta);
     return uv + vec2(delta.y, -delta.x) * d2 * strength + offset;
   }
-  // What a glossy surface mirrors: there is no scene to reflect here, so a
-  // soft sky (dark below the horizon, pale above) stands in for it
-  vec3 yargEnv(vec3 R, float smoothness) {
-    vec3 sky = mix(vec3(0.07, 0.07, 0.09), vec3(0.78, 0.8, 0.86), smoothstep(-0.25, 0.55, R.y));
-    return mix(vec3(0.4), sky, 0.45 + 0.55 * smoothness);
-  }
   // Shader Graph "Blend" node, Overlay mode
   vec3 blendOverlay(vec3 base, vec3 blend) {
     vec3 r1 = 1.0 - 2.0 * (1.0 - base) * (1.0 - blend);
@@ -148,7 +204,8 @@ const _YARG_FRAG = `
   }
 
   void main() {
-    vec4 baseTex = mix(vec4(1.0), texture2D(uMap, vUv), uUseMap);
+    vec3 base = yargLinear(mix(vec3(1.0), texture2D(uMap, vUv).rgb, uUseMap));
+    vec3 color = yargLinear(uColor);
     vec3 albedo;
     vec3 emission = uEmissive;
 
@@ -164,35 +221,24 @@ const _YARG_FRAG = `
       float rate = 1.0 + (1.01 + (vSeed + 3.18) * ((-1.11 - 1.01) / (13.24 + 3.18)));
       nuv += uTime * rate * uNoiseSpeed;
       float n = gradientNoise(nuv, -1.11);
-      vec3 ramp = max(texture2D(uNoiseTex, vec2(n)).rgb, vec3(uMinDarkness));
-      albedo = blendOverlay(baseTex.rgb, ramp) * uColor;
-      emission += uColor * ramp * uEmission;
+      vec3 ramp = max(yargLinear(texture2D(uNoiseTex, vec2(n)).rgb), vec3(uMinDarkness));
+      albedo = blendOverlay(base, ramp) * color;
+      // Emission: the ramp through a gradient that is black up to 0.28 and
+      // rises to white at 1, times the color and _Emission
+      emission += color * clamp((ramp.r - 0.2794) / 0.7206, 0.0, 1.0) * uEmission;
     } else {
-      albedo = baseTex.rgb * uColor;
-      emission += baseTex.rgb * uColor * uEmissionMap;
+      albedo = base * color;
+      emission += base * color * uEmissionMap;
     }
 
     // Shine map painted over the result ("Overwrite" blend)
     vec4 shine = texture2D(uShineMap, vUv);
-    albedo = mix(albedo, shine.rgb, clamp(uShineAmount * shine.a, 0.0, 1.0));
+    albedo = mix(albedo, yargLinear(shine.rgb), clamp(uShineAmount * shine.a, 0.0, 1.0));
 
-    vec3 N = normalize(vNormal);
-    vec3 V = normalize(vViewDir);
-    vec3 L = normalize(vec3(0.35, 0.8, 0.45));
-    vec3 H = normalize(L + V);
-    float diff = 0.72 + 0.4 * max(dot(N, L), 0.0);
-    float spec = pow(max(dot(N, H), 0.0), mix(8.0, 48.0, uSmoothness)) * (0.08 + 0.35 * uSmoothness);
-    // YargLit is a specular-workflow material with specular color 0.5: half
-    // of what reaches it is mirrored instead of diffused, which is what makes
-    // the notes' metal read as metal even where its texture is dark.
-    // (RectangularNote, the colored middle, has specular 0.)
-    float fres = uSpecular + (1.0 - uSpecular) * pow(1.0 - max(dot(N, V), 0.0), 5.0);
-    vec3 mirrored = yargEnv(reflect(-V, N), uSmoothness) * fres * step(0.001, uSpecular);
-    vec3 col = albedo * diff * (1.0 - uSpecular) + mirrored + vec3(spec) + emission;
-    // No HDR here: scale an over-bright color back instead of letting each
-    // channel clip, which would shift its hue (orange toward yellow)
-    float peak = max(col.r, max(col.g, col.b));
-    if (peak > 1.0) col /= peak;
+    // RectangularNote (the middle) is specular-workflow with specular 0;
+    // YargLit is metallic-workflow
+    vec3 col = yargShade(albedo, emission, uMetallic, uSmoothness, uNoisy > 0.5,
+      normalize(vNormal), normalize(vViewDir));
     gl_FragColor = vec4(col, opacity);
   }`;
 
@@ -214,9 +260,10 @@ function _yargBind(m) {
   };
 }
 
-// p: { map, shineMap, color, emissive, noisy, shineAmount, minDarkness,
+// p: { map, shineMap, color, noisy, shineAmount, minDarkness,
 //      noiseScale, noiseSpeed, noiseTiling:[x,y], emission, emissionMap,
-//      smoothness, specular }
+//      smoothness, metallic, glow }
+// glow: a white emission in linear HDR units (Unity's _EmissionColor)
 function _yargMat(key, p) {
   key = 'yarg_' + key;
   if (_matCache[key]) return _matCache[key];
@@ -227,7 +274,7 @@ function _yargMat(key, p) {
       uShineMap: { value: p.shineMap ? _yargTex(p.shineMap) : null },
       uNoiseTex: { value: p.noisy ? _yargTex('noise') : null },
       uColor: { value: new THREE.Color(p.color !== undefined ? p.color : 0xffffff) },
-      uEmissive: { value: new THREE.Color(p.emissive || 0x000000) },
+      uEmissive: { value: new THREE.Color().setScalar(p.glow || 0) },
       uUseMap: { value: p.map ? 1 : 0 },
       uNoisy: { value: p.noisy ? 1 : 0 },
       uShineAmount: { value: p.shineMap ? (p.shineAmount || 0) : 0 },
@@ -239,7 +286,7 @@ function _yargMat(key, p) {
       uEmission: { value: p.emission || 0 },
       uEmissionMap: { value: p.emissionMap || 0 },
       uSmoothness: { value: p.smoothness || 0 },
-      uSpecular: { value: p.specular || 0 },
+      uMetallic: { value: p.metallic || 0 },
       uTime: _yargTime,
       opacity: { value: 1.0 },
     },
@@ -257,7 +304,7 @@ function _yargMat(key, p) {
 function _yargPartMat(model, role, color) {
   if (model === 'cymbal' || model === 'cymbalAccent' || model === 'cymbalGhost') {
     if (role === 'hopo') { // NoteHOPOGlow.mat (the accent cymbal's white ring)
-      return _yargMat('hopoGlow', { color: 0xffffff, emissive: 0x666666 });
+      return _yargMat('hopoGlow', { color: 0xffffff, smoothness: 0.5, glow: 1.4142 });
     }
     if (role === 'ghostCenter') {
       // CymbalGhostCenter.mat: the cymbal map under a color at half the
@@ -272,13 +319,13 @@ function _yargPartMat(model, role, color) {
       });
     }
     // CymbalMetal.mat / CymbalGlow.mat
-    return _yargMat('cym_' + role, { map: 'cymbal', smoothness: role === 'glow' ? 0.5 : 0, specular: 0.5 });
+    return _yargMat('cym_' + role, { map: 'cymbal', smoothness: role === 'glow' ? 0.5 : 0 });
   }
   if (model === 'kick') {
     if (role === 'middle') { // KickNoteMiddle.mat (emission from its own map)
       return _yargMat('kickMid_' + color, { map: 'kick', color, emissionMap: 0.9 });
     }
-    return _yargMat('kickMetal', { map: 'kick', specular: 0.5 }); // KickNoteMetal.mat
+    return _yargMat('kickMetal', { map: 'kick' }); // KickNoteMetal.mat
   }
   if (model === 'open' || model === 'openHopo') {
     // OpenMiddle.mat / OpenMetal.mat, or for an open HOPO OpenHopoMiddle.mat /
@@ -287,7 +334,7 @@ function _yargPartMat(model, role, color) {
     if (role === 'middle') {
       return _yargMat(map + 'Mid_' + color, { map, color, emissionMap: 0.9 });
     }
-    return _yargMat(map + 'Metal', { map, smoothness: 0.245, specular: 0.5 });
+    return _yargMat(map + 'Metal', { map, smoothness: 0.245, metallic: 1 });
   }
   switch (role) {
     case 'middle': // NoteMiddle.mat
@@ -296,11 +343,11 @@ function _yargPartMat(model, role, color) {
         minDarkness: 0.15, noiseScale: -2.8, noiseSpeed: 0.4, noiseTiling: [1.1, 1.3], emission: 0.1,
       });
     case 'hopo': // NoteHOPOGlow.mat: untextured, white, emissive
-      return _yargMat('hopoGlow', { color: 0xffffff, emissive: 0x666666 });
+      return _yargMat('hopoGlow', { color: 0xffffff, smoothness: 0.5, glow: 1.4142 });
     case 'tap': // NoteTapCenter.mat
       return _yargMat('tap_' + color, { map: 'normal', shineMap: 'normalShine', shineAmount: 0.2, color });
     default: // NoteMetal.mat / NoteGlow.mat
-      return _yargMat('metal', { map: 'normal', smoothness: 0.5, specular: 0.5 });
+      return _yargMat('metal', { map: 'normal', smoothness: 0.5 });
   }
 }
 
@@ -403,7 +450,7 @@ function _createYargCymbal(x, y, z, size, color, userData, isAccent, isGhost) {
 // ============================================================
 
 // uKind: 0 metal, 1 outer frame, 2 inner pad, 3 kick fret
-const _YARG_FRET_FRAG = `
+const _YARG_FRET_FRAG = _YARG_LIGHTING + `
   uniform sampler2D uMap;
   uniform sampler2D uShineMap;
   uniform vec3 uColor;
@@ -416,12 +463,6 @@ const _YARG_FRET_FRAG = `
   varying vec3 vNormal;
   varying vec3 vViewDir;
 
-  // What a glossy surface mirrors: there is no scene to reflect here, so a
-  // soft sky (dark below the horizon, pale above) stands in for it
-  vec3 yargEnv(vec3 R, float smoothness) {
-    vec3 sky = mix(vec3(0.07, 0.07, 0.09), vec3(0.78, 0.8, 0.86), smoothstep(-0.25, 0.55, R.y));
-    return mix(vec3(0.4), sky, 0.45 + 0.55 * smoothness);
-  }
   // Shader Graph "Hue" node (degrees), as a rotation about the grey axis
   vec3 hueShift(vec3 c, float deg) {
     float a = radians(deg);
@@ -430,43 +471,35 @@ const _YARG_FRET_FRAG = `
   }
 
   void main() {
-    vec4 tex = texture2D(uMap, vUv);
-    vec3 albedo = tex.rgb;
-    vec3 emission = vec3(0.0);
+    vec3 tex = yargLinear(texture2D(uMap, vUv).rgb);
+    vec3 color = yargLinear(uColor);
+    vec3 albedo = tex;
     if (uKind > 2.5) {
       // Kick fret (KickFret.mat, YargLit): base map * color
-      albedo = tex.rgb * uColor;
+      albedo = tex * color;
     } else if (uKind > 1.5) {
       // Inner: base = lerp(texture, color, Fade), emission = lerp(black,
       // color, Fade) * 5. Fade is 1 while the fret is "pressed", else 0.
       // In YARG's HDR that emission makes the pad a flat, fully bright version
-      // of its color. Without HDR, adding 5x the color would clip each channel
-      // and shift the hue (green to yellow), so the pad goes straight to the
-      // color at full brightness instead (see the end of main).
-      albedo = mix(tex.rgb, uColor, uFade);
+      // of its color. Through the tonemapper, 5x the color would wash toward
+      // white and shift the hue (green to yellow), so the pad goes straight to
+      // the color at full brightness instead (see the end of main).
+      albedo = mix(tex, color, uFade);
     } else if (uKind > 0.5) {
       // Outer: color * texture, with the hue-shifted shine painted over it
-      albedo = uColor * tex.rgb;
+      albedo = color * tex;
       vec4 shine = texture2D(uShineMap, vUv);
-      vec3 shineCol = mix(hueShift(uColor, 20.0), vec3(1.0), 0.1) * shine.rgb;
+      vec3 shineCol = mix(hueShift(color, 20.0), vec3(1.0), 0.1) * yargLinear(shine.rgb);
       albedo = mix(albedo, shineCol, clamp(shine.a, 0.0, 1.0));
       // (no emission: the frame itself does not change on a hit in YARG)
     }
     vec3 N = normalize(vNormal);
-    vec3 V = normalize(vViewDir);
-    vec3 L = normalize(vec3(0.35, 0.8, 0.45));
-    vec3 H = normalize(L + V);
-    float diff = 0.72 + 0.4 * max(dot(N, L), 0.0);
-    float spec = pow(max(dot(N, H), 0.0), 24.0) * 0.18;
     // The effects' point lights sit just above the fret: they light its
     // upward faces in their color
-    vec3 lit = albedo * uLight * (0.35 + 0.65 * max(N.y, 0.0));
-    // FretMetal.mat and KickFret.mat are YargLit (specular color 0.5, see the
-    // note shader); the frame and inner pad are plain lit
-    float ks = (uKind < 0.5 || uKind > 2.5) ? 0.5 : 0.0;
-    float fres = ks + (1.0 - ks) * pow(1.0 - max(dot(N, V), 0.0), 5.0);
-    vec3 mirrored = yargEnv(reflect(-V, N), 0.0) * fres * step(0.001, ks);
-    vec3 col = min(albedo * diff * (1.0 - ks) + mirrored + vec3(spec) + emission + lit, vec3(1.0));
+    vec3 lit = albedo * uLight * (0.35 + 0.65 * max((vec4(N, 0.0) * viewMatrix).y, 0.0));
+    // All four are metallic 0 and smoothness 0 (FretMetal.mat, KickFret.mat,
+    // and the outer and inner graphs)
+    vec3 col = yargShade(albedo, lit, 0.0, 0.0, false, N, normalize(vViewDir));
     if (uKind > 1.5 && uKind < 2.5) {
       vec3 bright = uColor / max(max(uColor.r, max(uColor.g, uColor.b)), 0.001);
       col = mix(col, mix(bright, vec3(1.0), 0.12), uFade);
