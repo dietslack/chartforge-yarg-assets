@@ -104,11 +104,7 @@ const _YARG_VERT = `
 // nothing. The metal's look is its painted texture, the light's highlight and
 // the falloff of the light across faces turned away from it.
 // Axes: Unity's z runs away from the camera, the scene's toward it.
-const _YARG_LIGHTING = `
-  #define YARG_PL_MAX ${_YARG_PL_MAX}
-  uniform vec4 uYargPLPos[YARG_PL_MAX];
-  uniform vec4 uYargPLCol[YARG_PL_MAX];
-  varying vec3 vWorldPos;
+const _YARG_COLOR = `
   vec3 yargLinear(vec3 c) {
     return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
   }
@@ -122,7 +118,12 @@ const _YARG_LIGHTING = `
     c = inM * c;
     c = (c * (c + 0.0245786) - 0.000090537) / (c * (0.983729 * c + 0.4329510) + 0.238081);
     return clamp(outM * c, 0.0, 1.0);
-  }
+  }`;
+const _YARG_LIGHTING = _YARG_COLOR + `
+  #define YARG_PL_MAX ${_YARG_PL_MAX}
+  uniform vec4 uYargPLPos[YARG_PL_MAX];
+  uniform vec4 uYargPLCol[YARG_PL_MAX];
+  varying vec3 vWorldPos;
   // The scene's ambient probe, evaluated as URP's SampleSH does. n is a world
   // direction in Unity's axes.
   vec3 yargAmbient(vec3 n) {
@@ -293,8 +294,9 @@ function _yargBind(m) {
 
 // p: { map, shineMap, color, noisy, shineAmount, minDarkness,
 //      noiseScale, noiseSpeed, noiseTiling:[x,y], emission, emissionMap,
-//      smoothness, metallic, glow }
-// glow: a white emission in linear HDR units (Unity's _EmissionColor)
+//      smoothness, metallic, glow, glowColor }
+// glow: a white emission in linear HDR units (Unity's _EmissionColor);
+// glowColor: [r, g, b] in those units, in place of it
 function _yargMat(key, p) {
   key = 'yarg_' + key;
   if (_matCache[key]) return _matCache[key];
@@ -305,7 +307,7 @@ function _yargMat(key, p) {
       uShineMap: { value: p.shineMap ? _yargTex(p.shineMap) : null },
       uNoiseTex: { value: p.noisy ? _yargTex('noise') : null },
       uColor: { value: new THREE.Color(p.color !== undefined ? p.color : 0xffffff) },
-      uEmissive: { value: new THREE.Color().setScalar(p.glow || 0) },
+      uEmissive: { value: p.glowColor ? new THREE.Color(...p.glowColor) : new THREE.Color().setScalar(p.glow || 0) },
       uUseMap: { value: p.map ? 1 : 0 },
       uNoisy: { value: p.noisy ? 1 : 0 },
       uShineAmount: { value: p.shineMap ? (p.shineAmount || 0) : 0 },
@@ -331,11 +333,26 @@ function _yargMat(key, p) {
   return mat;
 }
 
+// Set by the note builder while it builds a note inside a star power phrase:
+// YARG then tints the theme's "Colored Metal Materials" with the color
+// profile's MetalStarPower, gold #FFD700, in place of Metal (white). Those
+// are the metal and glow slots, plus the white ring of the accent pad and
+// the accent cymbal. Both _Color and _EmissionColor are set to it; only the
+// ring has emission enabled, so it glows gold instead of white.
+let _yargSPMetal = false;
+const _YARG_METAL_SP_COLOR = 0xffd700;
+// The gold as a linear emission color (Unity converts _EmissionColor)
+const _YARG_METAL_SP_GLOW = [1, 0.680, 0];
+function _yargSPRing() {
+  return _yargMat('hopoGlowSP', { color: _YARG_METAL_SP_COLOR, smoothness: 0.5, glowColor: _YARG_METAL_SP_GLOW });
+}
+
 // The material for one part of a model. `role` is the slot's material in
 // YARG's RectangularTheme prefab; `color` is the note color.
 function _yargPartMat(model, role, color) {
   if (model === 'cymbal' || model === 'cymbalAccent' || model === 'cymbalGhost') {
     if (role === 'hopo') { // NoteHOPOGlow.mat (the accent cymbal's white ring)
+      if (_yargSPMetal) return _yargSPRing();
       return _yargMat('hopoGlow', { color: 0xffffff, smoothness: 0.5, glow: 1.4142 });
     }
     if (role === 'ghostCenter') {
@@ -351,13 +368,17 @@ function _yargPartMat(model, role, color) {
       });
     }
     // CymbalMetal.mat / CymbalGlow.mat
-    return _yargMat('cym_' + role, { map: 'cymbal', smoothness: role === 'glow' ? 0.5 : 0 });
+    return _yargSPMetal
+      ? _yargMat('cymSP_' + role, { map: 'cymbal', smoothness: role === 'glow' ? 0.5 : 0, color: _YARG_METAL_SP_COLOR })
+      : _yargMat('cym_' + role, { map: 'cymbal', smoothness: role === 'glow' ? 0.5 : 0 });
   }
   if (model === 'kick') {
     if (role === 'middle') { // KickNoteMiddle.mat (emission from its own map)
       return _yargMat('kickMid_' + color, { map: 'kick', color, emissionMap: 0.9 });
     }
-    return _yargMat('kickMetal', { map: 'kick' }); // KickNoteMetal.mat
+    return _yargSPMetal // KickNoteMetal.mat
+      ? _yargMat('kickMetalSP', { map: 'kick', color: _YARG_METAL_SP_COLOR })
+      : _yargMat('kickMetal', { map: 'kick' });
   }
   if (model === 'open' || model === 'openHopo') {
     // OpenMiddle.mat / OpenMetal.mat, or for an open HOPO OpenHopoMiddle.mat /
@@ -366,7 +387,9 @@ function _yargPartMat(model, role, color) {
     if (role === 'middle') {
       return _yargMat(map + 'Mid_' + color, { map, color, emissionMap: 0.9 });
     }
-    return _yargMat(map + 'Metal', { map, smoothness: 0.245, metallic: 1 });
+    return _yargSPMetal
+      ? _yargMat(map + 'MetalSP', { map, smoothness: 0.245, metallic: 1, color: _YARG_METAL_SP_COLOR })
+      : _yargMat(map + 'Metal', { map, smoothness: 0.245, metallic: 1 });
   }
   switch (role) {
     case 'middle': // NoteMiddle.mat
@@ -375,11 +398,16 @@ function _yargPartMat(model, role, color) {
         minDarkness: 0.15, noiseScale: -2.8, noiseSpeed: 0.4, noiseTiling: [1.1, 1.3], emission: 0.1,
       });
     case 'hopo': // NoteHOPOGlow.mat: untextured, white, emissive
+      // On the accent pad the ring is one of the colored metal slots; the
+      // five-fret HOPO's ring is not
+      if (_yargSPMetal && model === 'accent') return _yargSPRing();
       return _yargMat('hopoGlow', { color: 0xffffff, smoothness: 0.5, glow: 1.4142 });
     case 'tap': // NoteTapCenter.mat
       return _yargMat('tap_' + color, { map: 'normal', shineMap: 'normalShine', shineAmount: 0.2, color });
     default: // NoteMetal.mat / NoteGlow.mat
-      return _yargMat('metal', { map: 'normal', smoothness: 0.5 });
+      return _yargSPMetal
+        ? _yargMat('metalSP', { map: 'normal', smoothness: 0.5, color: _YARG_METAL_SP_COLOR })
+        : _yargMat('metal', { map: 'normal', smoothness: 0.5 });
   }
 }
 
@@ -792,7 +820,9 @@ function _yargRock(e) {
 //   opens      count of open notes hit in the view so far (0 on drums)
 //   fx         spawn particles (false for a split panel that mirrors the
 //              main view, which spawns its own)
-function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scaleX, x, color, fx) {
+// openColor: the color of an open note's hit (YARG's open purple if left out)
+function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scaleX, x, color, fx, openColor) {
+  if (openColor === undefined) openColor = _YARG_OPEN_FX_COLOR;
   let st = _yargFretStates[key];
   if (!st) st = _yargFretStates[key] = { prev: [], oprev: [], hitAt: [], hitColor: [], cymAt: [], emit: [] };
   const k = fret.k;
@@ -813,8 +843,8 @@ function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scal
   // An open note pops every fret, with the open note's color
   if (st.oprev[lane] !== undefined && opens !== st.oprev[lane]) {
     st.hitAt[lane] = now;
-    st.hitColor[lane] = _YARG_OPEN_FX_COLOR;
-    if (fx) _yargFxHit(fxKey, x, floorY, z, k, _YARG_OPEN_FX_COLOR, true);
+    st.hitColor[lane] = openColor;
+    if (fx) _yargFxHit(fxKey, x, floorY, z, k, openColor, true);
   }
   st.oprev[lane] = opens;
 
@@ -855,7 +885,12 @@ function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scal
         x: x + (Math.random() - 0.5) * 0.24 * k, y: floorY + (0.114 + Math.random() * 0.06) * k,
         z: z + (0.08 + (Math.random() - 0.5) * 0.04) * k,
         vx: 0, vy: 0.9 * k, vz: 0, life: (0.25 + Math.random() * 0.2) / 1.5,
-        size: (0.025 + Math.random() * 0.01) * k, color, alpha: 1, shrink: 0.5,
+        // The Sparkle star, at a random angle, turning 45 degrees a second.
+        // YARG's size is 0.025-0.035, but its bloom (the lit star is over the
+        // threshold) makes the bigger ones read larger in the game: from
+        // YARG's smallest up to 1.2x its biggest
+        size: (0.025 + Math.random() * 0.017) * k, color, alpha: 1, shrink: 0.5,
+        kind: 4, rot: Math.random() * Math.PI * 2, spin: 0.7854 * 1.5,
       });
     }
   } else if (!sustained) {
@@ -890,6 +925,11 @@ function _yargFretLights(lane, x, floorY, z, k, hitColor, sustain, color) {
 }
 
 const _YARG_FX_MAX = 2400;
+// A shard's point is this many times the shard, to leave room for its glow.
+// (A sprite particle's longest side is the particle size, whatever the
+// sprite's pixel size: YARG's 1000 px smoke sprite at size 0.5 is half a
+// track wide, not five tracks.)
+const _YARG_SHARD_GLOW = 2.5;
 let _yargFx = null;
 
 function _yargFxInit() {
@@ -897,47 +937,117 @@ function _yargFxInit() {
   const pos = new Float32Array(_YARG_FX_MAX * 3);
   const col = new Float32Array(_YARG_FX_MAX * 4);
   const size = new Float32Array(_YARG_FX_MAX);
+  const rk = new Float32Array(_YARG_FX_MAX * 2);
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('rgba', new THREE.BufferAttribute(col, 4));
   geo.setAttribute('size', new THREE.BufferAttribute(size, 1));
+  geo.setAttribute('rotKind', new THREE.BufferAttribute(rk, 2));
+  // Kinds: 0 soft blob (additive); each system's own sprite: 1 shard and
+  // 2 sparkle (alpha blended), 3 ring (additive, ParticlesUnlit.mat),
+  // 4 sustain star (alpha blended). Output is
+  // premultiplied, so one blend mode (One, OneMinusSrcAlpha) serves both: a
+  // blob writes alpha 0 and so adds.
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uPx: { value: 400 } },
+    uniforms: {
+      uPx: { value: 400 }, uShard: { value: _yargTex('fretShard') }, uSparkle: { value: _yargTex('sparkle') },
+      uRing: { value: _yargTex('fretRing') }, uStar: { value: _yargTex('sparkleStar') },
+    },
     vertexShader: `
       attribute float size;
       attribute vec4 rgba;
+      attribute vec2 rotKind;
       uniform float uPx;
       varying vec4 vRgba;
+      varying vec2 vRotKind;
       void main() {
         vRgba = rgba;
+        vRotKind = rotKind;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         gl_PointSize = max(size * uPx / -mv.z, 1.0);
         gl_Position = projectionMatrix * mv;
       }`,
-    fragmentShader: `
+    fragmentShader: _YARG_COLOR + `
+      #define YARG_SHARD_GLOW ${_YARG_SHARD_GLOW.toFixed(1)}
+      uniform sampler2D uShard;
+      uniform sampler2D uSparkle;
+      uniform sampler2D uRing;
+      uniform sampler2D uStar;
       varying vec4 vRgba;
+      varying vec2 vRotKind;
       void main() {
-        float d = length(gl_PointCoord - vec2(0.5)) * 2.0;
-        if (d > 1.0) discard;
-        float a = (1.0 - d * d) * vRgba.a;
-        gl_FragColor = vec4(vRgba.rgb * a, a);
+        float kind = vRotKind.y;
+        if (kind < 0.5) {
+          float d = length(gl_PointCoord - vec2(0.5)) * 2.0;
+          if (d > 1.0) discard;
+          float a = (1.0 - d * d) * vRgba.a;
+          gl_FragColor = vec4(vRgba.rgb * a * a, 0.0);
+          return;
+        }
+        // The particle's quad, turned by its rotation; texture v runs up
+        vec2 pc = gl_PointCoord - 0.5;
+        float c = cos(vRotKind.x), s = sin(vRotKind.x);
+        vec2 uv = vec2(c * pc.x - s * pc.y, -(s * pc.x + c * pc.y));
+        vec4 t;
+        vec3 col;
+        if (kind > 2.5) {
+          uv += 0.5;
+          if (kind < 3.5) {
+            // Ring particle: the ring sprite in the lane color, additive
+            // (ParticlesUnlit.mat)
+            t = texture2D(uRing, uv);
+            float ra = t.a * vRgba.a;
+            gl_FragColor = vec4(vRgba.rgb * t.rgb * ra, 0.0);
+            return;
+          }
+          // Sustain star: the Sparkle sprite in the lane color, lit like the
+          // sparkles (ParticleTransparent.mat), alpha blended
+          t = texture2D(uStar, uv);
+          col = yargSRGB(yargACES(yargLinear(t.rgb * vRgba.rgb) * 1.55));
+        } else if (kind < 1.5) {
+          // Shard (248 x 220 sprite) in the middle of a point YARG_SHARD_GLOW
+          // times its size. GlassParticles.mat (YargParticlesUnlit): the
+          // sprite times the material color and the particle color, both the
+          // lane color, plus emission of 35 x the lane color (the
+          // EffectParticle sets both), through YARG's tonemapping.
+          // That emission is far over the bloom threshold (1): YARG's bloom
+          // (intensity 0.3) spreads it into a halo, which is where the lane
+          // color shows, since ACES takes the shard itself to near white.
+          // The halo here is a soft round falloff of the same HDR color.
+          vec3 lane = yargLinear(vRgba.rgb);
+          float fade = vRgba.a / 0.686;
+          float d = length(pc) * 2.0;
+          float h = 1.2 * exp(-d * d * 14.0) * fade;
+          vec3 glow = yargSRGB(yargACES(lane * h));
+          uv = uv * YARG_SHARD_GLOW;
+          uv.y *= 248.0 / 220.0;
+          uv += 0.5;
+          t = vec4(0.0);
+          if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0)))) t = texture2D(uShard, uv);
+          float sa = t.a * vRgba.a;
+          col = yargSRGB(yargACES(yargLinear(t.rgb) * lane * lane + lane * (35.0 + h)));
+          gl_FragColor = vec4(col * sa + glow * (1.0 - sa), sa);
+          return;
+        } else {
+          // Sparkle: the streak sprite, squeezed to 0.437 of its width by
+          // the object's scale ("Local" scaling). ParticleTransparent.mat is
+          // lit and untextured otherwise: white under the scene's key light
+          uv.x /= 0.43683;
+          uv += 0.5;
+          if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) discard;
+          t = texture2D(uSparkle, uv);
+          col = yargSRGB(yargACES(yargLinear(t.rgb) * 1.55));
+        }
+        float a = t.a * vRgba.a;
+        gl_FragColor = vec4(col * a, a);
       }`,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+    transparent: true, depthWrite: false, fog: false,
+    blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
   });
   const points = new THREE.Points(geo, mat);
   points.frustumCulled = false;
   points.renderOrder = 11;
   scene.add(points);
-  // Soft round blob standing in for Unity's built-in default particle texture
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const ctx = c.getContext('2d');
-  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-  g.addColorStop(0, 'rgba(255,255,255,1)');
-  g.addColorStop(0.5, 'rgba(255,255,255,0.35)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 64, 64);
-  _yargFx = { points, geo, mat, pos, col, size, pool: [], sprites: [], blob: new THREE.CanvasTexture(c) };
+  _yargFx = { points, geo, mat, pos, col, size, rk, pool: [], sprites: [] };
 }
 
 function _yargFxPoint(key, p) {
@@ -951,7 +1061,7 @@ function _yargFxPoint(key, p) {
   _yargFx.pool.push(p);
 }
 
-// kind: 'flash' (FretHit_Flash sheet, 2 x 10 frames) | 'blob'
+// kind: 'flash' (FretHit_Flash sheet, 2 x 10 frames) | 'blob' (FretHit_Big)
 function _yargFxSprite(key, kind, o) {
   if (!_yargFx) _yargFxInit();
   let s = _yargFx.sprites.find(q => !q.live && q.kind === kind);
@@ -968,7 +1078,8 @@ function _yargFxSprite(key, kind, o) {
       if (base.image) map.needsUpdate = true;
       else _yargFx.pendingFlash = (_yargFx.pendingFlash || []).concat(map);
     } else {
-      map = _yargFx.blob;
+      // Smoke and White Smoke: the FretHit_Big glow sprite
+      map = _yargTex('fretBig');
     }
     const mat = new THREE.SpriteMaterial({ map, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
     const sprite = new THREE.Sprite(mat);
@@ -1015,39 +1126,45 @@ function _yargFxHit(key, x, floorY, z, k, color, open) {
 
   // Ring: a burst thrown out over the upper half sphere at speed 4, squashed
   // by the object's scale (0.242, 0.242, 0.131); size 0.05 growing from 0,
-  // alpha 0.29 fading out over 0.5 s. YARG emits 200; 90 reads the same here.
+  // alpha 0.29 fading out over 0.5 s, each one the FretHit_Ring sprite.
+  // YARG emits 200; 90 reads the same here.
   for (let i = 0; i < 90; i++) {
     const az = Math.random() * Math.PI * 2, el = Math.acos(Math.random());
     const s = Math.sin(el);
     _yargFxPoint(key, {
       x, y: oy + (-0.031 + 0.03 * 0.242) * k, z: oz,
       vx: Math.cos(az) * s * 4 * 0.242 * k, vy: Math.cos(el) * 4 * 0.242 * k, vz: Math.sin(az) * s * 4 * 0.131 * k,
-      life: 0.5, size: 0.05 * 0.242 * k * 2, color, alpha: 0.29, growIn: true, fade: true,
+      life: 0.5, size: 0.05 * 0.242 * k, color, alpha: 0.29, growIn: true, fade: true, kind: 3,
     });
   }
   // Sparkles: 228 a second for 0.3 s at simulation speed 2 (about 34), white,
   // along the fret, thrown up and away (local z up to 1.5 on an object
-  // tilted 56.6 degrees), size up to 0.025, lifetime 0.3 at speed 2
+  // tilted 56.6 degrees), size up to 0.025, lifetime 0.3 at speed 2. Drawn
+  // as the Sparkle2 streak, upright (world-aligned, no rotation); alpha
+  // holds, then fades out over the last 19% (color over lifetime)
   for (let i = 0; i < 34; i++) {
     const v = Math.random() * 1.5 * 2, vy = Math.random() * 0.1 * 2;
     _yargFxPoint(key, {
       x: x + (Math.random() - 0.5) * 0.6 * 0.437 * k, y: floorY + (0.03 + Math.random() * 0.03) * k, z: oz - 0.022 * k,
       vx: 0, vy: (v * 0.835 + vy * 0.55) * k, vz: -(v * 0.55 - vy * 0.835) * k,
-      delay: Math.random() * 0.15, life: 0.15, size: Math.random() * 0.025 * k * 2,
-      color: 0xffffff, alpha: 1, shrink: 0.5, fade: true,
+      delay: Math.random() * 0.15, life: 0.15, size: Math.random() * 0.025 * k,
+      color: 0xffffff, alpha: 1, shrink: 0.5, fadeFrom: 0.81, kind: 2,
     });
   }
   // Shards: 4-6 after 0.05 s, lifetime 0.25-0.35, size 0.03-0.05, simulation
   // speed 1.5; velocity over lifetime rises (2 -> 0 by half life) and then
-  // comes at the player (0 -> 4 by half life); gravity -0.3 lifts them
+  // comes at the player (0 -> 4 by half life); gravity -0.3 lifts them.
+  // Drawn as the FretHit_Shard2 sprite at a random start angle, spinning at
+  // 150-360 degrees a second, alpha 0.686 (the start color's)
   const n = open ? 0 : 4 + Math.floor(Math.random() * 3);
   for (let i = 0; i < n; i++) {
     const az = Math.random() * Math.PI * 2;
     _yargFxPoint(key, {
       x: x + Math.cos(az) * 0.06 * k, y: oy + 0.02 * k, z: oz + (0.112 + Math.sin(az) * 0.06) * k,
       vx: Math.cos(az) * 0.2 * 1.5 * k, vy: 0, vz: 0, shard: 1.5 * k,
-      delay: 0.05 / 1.5, life: (0.25 + Math.random() * 0.1) / 1.5, size: (0.03 + Math.random() * 0.02) * k * 1.5,
-      color, alpha: 1, bright: 0.6, shrink: 0.69,
+      delay: 0.05 / 1.5, life: (0.25 + Math.random() * 0.1) / 1.5, size: (0.03 + Math.random() * 0.02) * _YARG_SHARD_GLOW * k,
+      color, alpha: 0.686, shrink: 0.69, kind: 1,
+      rot: Math.random() * Math.PI * 2, spin: (2.618 + Math.random() * (6.283 - 2.618)) * 1.5,
     });
   }
 }
@@ -1071,6 +1188,7 @@ function _yargFxUpdate(dt) {
       p.vz = 4 * Math.min(1, 2 * u) * p.shard;
     }
     p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+    if (p.spin) p.rot += p.spin * dt;
   }
   for (const s of fx.sprites) {
     if (!s.live) continue;
@@ -1096,17 +1214,21 @@ function _yargFxWrite(filterKey) {
     if (p.growIn) size *= u;
     if (p.shrink !== undefined && u > p.shrink) size *= 1 - (u - p.shrink) / (1 - p.shrink);
     if (p.fade) a *= 1 - u;
+    if (p.fadeFrom !== undefined && u > p.fadeFrom) a *= 1 - (u - p.fadeFrom) / (1 - p.fadeFrom);
     const b = p.bright || 0;
     fx.pos[n * 3] = p.x; fx.pos[n * 3 + 1] = p.y; fx.pos[n * 3 + 2] = p.z;
     fx.col[n * 4] = p.r + (1 - p.r) * b; fx.col[n * 4 + 1] = p.g + (1 - p.g) * b; fx.col[n * 4 + 2] = p.b + (1 - p.b) * b;
     fx.col[n * 4 + 3] = a;
     fx.size[n] = size;
+    fx.rk[n * 2] = p.rot || 0;
+    fx.rk[n * 2 + 1] = p.kind || 0;
     n++;
   }
   fx.geo.setDrawRange(0, n);
   fx.geo.attributes.position.needsUpdate = true;
   fx.geo.attributes.rgba.needsUpdate = true;
   fx.geo.attributes.size.needsUpdate = true;
+  fx.geo.attributes.rotKind.needsUpdate = true;
   for (const s of fx.sprites) {
     const show = s.live && s.age >= 0 && (!filterKey || s.key === filterKey);
     s.sprite.visible = show;
