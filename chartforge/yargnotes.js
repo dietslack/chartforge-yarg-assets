@@ -344,7 +344,21 @@ const _YARG_METAL_SP_COLOR = 0xffd700;
 // The gold as a linear emission color (Unity converts _EmissionColor)
 const _YARG_METAL_SP_GLOW = [1, 0.680, 0];
 function _yargSPRing() {
-  return _yargMat('hopoGlowSP', { color: _YARG_METAL_SP_COLOR, smoothness: 0.5, glowColor: _YARG_METAL_SP_GLOW });
+  if (_ncMetalSP === _YARG_METAL_SP_COLOR) {
+    return _yargMat('hopoGlowSP', { color: _YARG_METAL_SP_COLOR, smoothness: 0.5, glowColor: _YARG_METAL_SP_GLOW });
+  }
+  // A custom MetalStarPower (js/notecolors.js): its linear emission color
+  const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  const c = _ncMetalSP;
+  return _yargMat('hopoGlowSP_' + c, { color: c, smoothness: 0.5, glowColor: [lin((c >> 16) & 255), lin((c >> 8) & 255), lin(c & 255)] });
+}
+
+// A "Colored Metal" material: tinted with the color profile's Metal, or
+// MetalStarPower while a star power note is being built. The default white
+// metal keeps the plain (untinted) material.
+function _yargMetalMat(key, p) {
+  if (_yargSPMetal) return _yargMat(key + '_SP' + _ncMetalSP, { ...p, color: _ncMetalSP });
+  return _ncMetal === 0xffffff ? _yargMat(key, p) : _yargMat(key + '_M' + _ncMetal, { ...p, color: _ncMetal });
 }
 
 // The material for one part of a model. `role` is the slot's material in
@@ -368,17 +382,13 @@ function _yargPartMat(model, role, color) {
       });
     }
     // CymbalMetal.mat / CymbalGlow.mat
-    return _yargSPMetal
-      ? _yargMat('cymSP_' + role, { map: 'cymbal', smoothness: role === 'glow' ? 0.5 : 0, color: _YARG_METAL_SP_COLOR })
-      : _yargMat('cym_' + role, { map: 'cymbal', smoothness: role === 'glow' ? 0.5 : 0 });
+    return _yargMetalMat('cym_' + role, { map: 'cymbal', smoothness: role === 'glow' ? 0.5 : 0 });
   }
   if (model === 'kick') {
     if (role === 'middle') { // KickNoteMiddle.mat (emission from its own map)
       return _yargMat('kickMid_' + color, { map: 'kick', color, emissionMap: 0.9 });
     }
-    return _yargSPMetal // KickNoteMetal.mat
-      ? _yargMat('kickMetalSP', { map: 'kick', color: _YARG_METAL_SP_COLOR })
-      : _yargMat('kickMetal', { map: 'kick' });
+    return _yargMetalMat('kickMetal', { map: 'kick' }); // KickNoteMetal.mat
   }
   if (model === 'open' || model === 'openHopo') {
     // OpenMiddle.mat / OpenMetal.mat, or for an open HOPO OpenHopoMiddle.mat /
@@ -387,9 +397,24 @@ function _yargPartMat(model, role, color) {
     if (role === 'middle') {
       return _yargMat(map + 'Mid_' + color, { map, color, emissionMap: 0.9 });
     }
-    return _yargSPMetal
-      ? _yargMat(map + 'MetalSP', { map, smoothness: 0.245, metallic: 1, color: _YARG_METAL_SP_COLOR })
-      : _yargMat(map + 'Metal', { map, smoothness: 0.245, metallic: 1 });
+    return _yargMetalMat(map + 'Metal', { map, smoothness: 0.245, metallic: 1 });
+  }
+  if (model === 'keysWhite' || model === 'keysGliss' || model === 'keysBlack') {
+    // Pro Keys notes. KeysWhiteMiddle.mat / KeysBlackMiddle.mat are the
+    // rectangular note shader with their own noise settings; the metal, the
+    // KeysGlow frame and the glow are all "Colored Metal Materials".
+    if (role === 'middle') {
+      return model === 'keysBlack'
+        ? _yargMat('keysBlackMid_' + color, {
+            map: 'normal', shineMap: 'normalShine', shineAmount: 0.1, color, noisy: true,
+            minDarkness: 0.4, noiseScale: -2.8, noiseSpeed: 0.1, noiseTiling: [1.5, 1.5], emission: 0.3,
+          })
+        : _yargMat('keysWhiteMid_' + color, {
+            map: 'normal', shineMap: 'normalShine', shineAmount: 0.1, color, noisy: true,
+            minDarkness: 0.6, noiseScale: -2.8, noiseSpeed: 0.2, noiseTiling: [0.5, 0.5], emission: 0.1,
+          });
+    }
+    return _yargMetalMat('metal', { map: 'normal', smoothness: 0.5 });
   }
   switch (role) {
     case 'middle': // NoteMiddle.mat
@@ -405,9 +430,7 @@ function _yargPartMat(model, role, color) {
     case 'tap': // NoteTapCenter.mat
       return _yargMat('tap_' + color, { map: 'normal', shineMap: 'normalShine', shineAmount: 0.2, color });
     default: // NoteMetal.mat / NoteGlow.mat
-      return _yargSPMetal
-        ? _yargMat('metalSP', { map: 'normal', smoothness: 0.5, color: _YARG_METAL_SP_COLOR })
-        : _yargMat('metal', { map: 'normal', smoothness: 0.5 });
+      return _yargMetalMat('metal', { map: 'normal', smoothness: 0.5 });
   }
 }
 
@@ -417,6 +440,7 @@ function _yargPartMat(model, role, color) {
 // track, the kick bar a hair into it, and the open note bar is sunk in so
 // only about two thirds of it shows.
 const _YARG_NOTE_Y = {
+  keysWhite: 0.0686, keysBlack: 0.0686, keysGliss: 0.0686, // 0.0666 on an element 0.002 up
   normal: 0.077, hopo: 0.073, tap: 0.073, accent: 0.079, ghost: 0.064,
   open: 0.032, kick: 0.03, cymbal: 0.1, cymbalAccent: 0.1, cymbalGhost: 0.1,
 };
@@ -822,7 +846,10 @@ function _yargRock(e) {
 //              main view, which spawns its own)
 // openColor: the color of an open note's hit (YARG's open purple if left out)
 function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scaleX, x, color, fx, openColor) {
-  if (openColor === undefined) openColor = _YARG_OPEN_FX_COLOR;
+  if (openColor === undefined) openColor = getOpenFxColor();
+  // Custom note colors: the fret's inner and hit effect colors (ncFretExtras)
+  const fxColor = fret.fxColor !== undefined ? fret.fxColor : color;
+  const innerColor = fret.innerColor !== undefined ? fret.innerColor : color;
   let st = _yargFretStates[key];
   if (!st) st = _yargFretStates[key] = { prev: [], oprev: [], hitAt: [], hitColor: [], cymAt: [], emit: [] };
   const k = fret.k;
@@ -835,9 +862,9 @@ function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scal
   // One trigger per note. The first frame of a view only records the counts.
   if (st.prev[lane] !== undefined && hits !== st.prev[lane]) {
     st.hitAt[lane] = now;
-    st.hitColor[lane] = color;
+    st.hitColor[lane] = fxColor;
     if (_yargCymHit[lane] && fx) st.cymAt[lane] = now;
-    if (fx) _yargFxHit(fxKey, x, floorY, z, k, color);
+    if (fx) _yargFxHit(fxKey, x, floorY, z, k, fxColor);
   }
   st.prev[lane] = hits;
   // An open note pops every fret, with the open note's color
@@ -871,9 +898,9 @@ function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scal
   const pressed = sustained || e < 0.1;
   const iu = fret.innerMat.uniforms;
   iu.uFade.value = pressed ? 1 : 0;
-  iu.uColor.value.set(color);
+  iu.uColor.value.set(innerColor);
   _yargFretLights(lane, x, floorY, z, k, e < 0.1 ? st.hitColor[lane] : null,
-    sustained ? 3 + Math.sin(now * 30) * 0.075 + Math.sin(now * 40) * 0.075 : 0, color);
+    sustained ? 3 + Math.sin(now * 30) * 0.075 + Math.sin(now * 40) * 0.075 : 0, fxColor);
 
   // Sustain Effects: 25 particles a second at simulation speed 1.5
   if (sustained && fx) {
@@ -889,7 +916,7 @@ function _yargFretAnimate(fret, key, lane, hits, sustained, opens, now, dt, scal
         // YARG's size is 0.025-0.035, but its bloom (the lit star is over the
         // threshold) makes the bigger ones read larger in the game: from
         // YARG's smallest up to 1.2x its biggest
-        size: (0.025 + Math.random() * 0.017) * k, color, alpha: 1, shrink: 0.5,
+        size: (0.025 + Math.random() * 0.017) * k, color: fxColor, alpha: 1, shrink: 0.5,
         kind: 4, rot: Math.random() * Math.PI * 2, spin: 0.7854 * 1.5,
       });
     }
@@ -1256,4 +1283,171 @@ function _yargFxBusy() {
     for (const t of st.cymAt) if (t !== undefined && now - t < 0.25) return true;
   }
   return false;
+}
+
+
+// ============================================================
+// PRO KEYS (YARG's ProKeysVisual: KeysArray, ProKeysTrackOverlay, the Pro
+// Keys notes of the rectangular theme, chord bars and shift indicators)
+// ============================================================
+// YARG's Pro Keys track is 2 wide and shows 10 white keys, 0.2 apart, with
+// the black keys halfway between them (0.1014 after a white key). The editor
+// shows all 25 keys, 15 white ones across the highway, so everything here is
+// YARG's layout scaled by _yargKeysK() instead of scrolling with the range.
+// Key positions come from pkKeyX() (js/prokeys.js).
+
+// ColorProfile.ProKeysColors defaults
+const _YARG_KEYS_COLORS = {
+  whiteKey: 0xffffff,
+  blackKey: [0x7F0E11, 0x7F7400, 0x095F7F, 0x3C6902, 0x7F4200], // red, yellow, blue, green, orange
+  overlay: [0xFF1D23, 0xFFE900, 0x00BFFF, 0x79D304, 0xFF8400],
+  whiteNote: 0xffffff, blackNote: 0x000000,
+  whiteNoteSP: 0xFFF2AA, blackNoteSP: 0xAA8F00,
+};
+
+// Scene units per YARG track unit on the Pro Keys highway
+function _yargKeysK() { return (HIGHWAY_WIDTH / 15) / 0.2; }
+
+// A Pro Keys note. black: on a black key; gliss: a white-key note inside a
+// glissando (YARG's glissando model); sp: inside a star power phrase.
+function _createYargKeysNote(x, z, black, gliss, sp, userData) {
+  const model = black ? 'keysBlack' : gliss ? 'keysGliss' : 'keysWhite';
+  const C = _YARG_KEYS_COLORS;
+  const color = black ? (sp ? C.blackNoteSP : C.blackNote) : (sp ? C.whiteNoteSP : C.whiteNote);
+  const k = _yargKeysK();
+  return _yargBuild(model, x, _yargBottomY(model, k), z, k, color, userData);
+}
+
+// The color a Pro Keys sustain is drawn in (YARG uses the note's own color)
+function _yargKeysNoteColor(black, sp) {
+  const C = _YARG_KEYS_COLORS;
+  return black ? (sp ? C.blackNoteSP : C.blackNote) : (sp ? C.whiteNoteSP : C.whiteNote);
+}
+
+// ProKeysChordBar.prefab: the bar under a chord, from its lowest to its
+// highest note. A middle piece stretched between them (0.085 past each) and
+// an end piece 0.024 beyond that on both sides, the left one mirrored.
+function _yargKeysChordBar(xMin, xMax, z) {
+  const k = _yargKeysK();
+  const mat = _yargMat('keysChordBar', { color: 0xB7B7B7, smoothness: 0.373, metallic: 0.046 }); // ProKeysChordBar.mat
+  const out = [];
+  const lo = Math.min(xMin, xMax) - 0.085 * k, hi = Math.max(xMin, xMax) + 0.085 * k;
+  const zz = z - 0.061 * k;
+  const mid = YARG_NOTE_MODEL.chordBar, end = YARG_NOTE_MODEL.chordBarEnd;
+  for (let i = 0; i < mid.parts.length; i++) {
+    const m = _acquireMesh(_yargGeo('chordBar', i), mat);
+    m.scale.set((hi - lo) / mid.w, k, k);
+    m.position.set((lo + hi) / 2, _YARG_TRACK_Y + (0.012 + mid.y0) * k, zz);
+    out.push(m);
+  }
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < end.parts.length; i++) {
+      const m = _acquireMesh(_yargGeo('chordBarEnd', i), mat);
+      m.scale.set(side * k, k, k);
+      // The end's own origin sits 0.024 outside the bar; c is where that
+      // origin was before the model was centred
+      m.position.set((side < 0 ? lo : hi) + side * (0.024 - end.c[0]) * k, _YARG_TRACK_Y + (0.0109 + end.y0) * k, zz);
+      out.push(m);
+    }
+  }
+  return out;
+}
+
+// ProKeysShiftIndicator.prefab: the arrows that run down the track on the
+// four strong beats before a range shift, on the side the keys move to.
+function _yargKeysShiftArrow(z, leftSide) {
+  const k = _yargKeysK();
+  const mat = _getFrameMat('yargKeysShift', () => new THREE.MeshBasicMaterial({
+    map: _yargTex('rangeShift'), color: 0xFFE561, transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide,
+  }));
+  // Placed and sized against the whole track (YARG's is 2 wide), not the keys
+  const U = HIGHWAY_WIDTH / 2;
+  const m = _acquireMesh(_unitPlane, mat);
+  m.rotation.x = -Math.PI / 2;
+  m.scale.set((leftSide ? -1 : 1) * 0.5 * U, 0.17 * U, 1);
+  m.position.set((leftSide ? -1 : 1) * 0.64 * U, _YARG_TRACK_Y + 0.052 * k, z + 0.02 * U);
+  m.renderOrder = 3;
+  return m;
+}
+
+// The static parts: a key at the strikeline for each of the 25 notes, the
+// group-colored overlay along every white key's lane, and a highlight per
+// key that lights while it is held. Returns { meshes, keys, highlights }:
+// the caller owns the meshes; _yargKeysAnimate() poses the rest.
+let _yargKeysRig = null;
+function _yargBuildKeysTrack(barZ, length) {
+  const k = _yargKeysK();
+  const C = _YARG_KEYS_COLORS;
+  const meshes = [], keys = [], highlights = [];
+  const farZ = barZ - length;
+  // ProKeysKeyOverlayBig: a 0.185 wide strip in the group color at 5% (the
+  // editor's highway is darker than YARG's lit track, so it is drawn a
+  // little stronger), with the ProKeyEdge line on the outer side of the
+  // first and last white key of each group
+  const stripGeo = new THREE.PlaneGeometry(0.185 * k, length);
+  const edgeGeo = new THREE.PlaneGeometry(0.185 * k, length);
+  const hiWhite = new THREE.PlaneGeometry(0.185 * k, length);
+  const hiBlack = new THREE.PlaneGeometry(0.1 * k, length);
+  const edgeTex = _yargTex('proKeyEdge'), pressTex = _yargTex('proKeyPress');
+  for (let lane = 0; lane < PK_LANES; lane++) {
+    const black = pkIsBlackLane(lane);
+    const group = pkLaneGroup(lane);
+    const x = pkKeyX(lane);
+    const note = lane % 12;
+
+    // Strikeline key ("White Key" / "Black Key": WhiteKey.mat, BlackKey.mat)
+    const model = black ? 'blackKey' : 'whiteKey';
+    const src = YARG_NOTE_MODEL[model];
+    const color = black ? C.blackKey[group] : C.whiteKey;
+    const mesh = new THREE.Mesh(_yargGeo(model, 0), _yargMat(model + '_' + color, { map: model, color, smoothness: 0 }));
+    mesh.scale.set(k, k, k);
+    const baseY = _YARG_TRACK_Y + ((black ? 0.096 : 0.069) + src.y0) * k;
+    mesh.position.set(x, baseY, barZ - ((black ? 0.0231 : 0.0043) + src.c[1]) * k);
+    if (black) mesh.renderOrder = 1;
+    meshes.push(mesh);
+    keys.push({ mesh, baseY, lane, black });
+
+    if (!black) {
+      const strip = new THREE.Mesh(stripGeo, new THREE.MeshBasicMaterial({ color: C.overlay[group], transparent: true, opacity: 0.09, depthWrite: false }));
+      strip.rotation.x = -Math.PI / 2;
+      strip.position.set(x, 0.006, (barZ + farZ) / 2);
+      strip.renderOrder = 1;
+      meshes.push(strip);
+      const edgeLeft = note === 0 || note === 5, edgeRight = note === 4 || note === 11;
+      if (edgeLeft || edgeRight) {
+        const edge = new THREE.Mesh(edgeGeo, new THREE.MeshBasicMaterial({ map: edgeTex, color: C.overlay[group], transparent: true, opacity: 0.9, depthWrite: false }));
+        edge.rotation.x = -Math.PI / 2;
+        // The line is on the texture's left; mirrored for a group's last key
+        // (and the other way round when the highway is flipped)
+        if (edgeRight !== !!State.leftyFlip) edge.scale.x = -1;
+        edge.position.set(x, 0.007, (barZ + farZ) / 2);
+        edge.renderOrder = 1;
+        meshes.push(edge);
+      }
+    }
+
+    // ProKeysKeyHighlight: the held gradient in the group color at 30%
+    const hi = new THREE.Mesh(black ? hiBlack : hiWhite, new THREE.MeshBasicMaterial({ map: pressTex, color: C.overlay[group], transparent: true, opacity: 0.3, depthWrite: false }));
+    hi.rotation.x = -Math.PI / 2;
+    hi.position.set(x, 0.009, (barZ + farZ) / 2);
+    hi.renderOrder = 2;
+    hi.visible = false;
+    meshes.push(hi);
+    highlights.push(hi);
+  }
+  _yargKeysRig = { keys, highlights, barZ, k };
+  return _yargKeysRig.meshes = meshes, _yargKeysRig;
+}
+
+// Pose the keys. pressed[lane]: the key is down (ProKeysPressed.anim: 0.01
+// lower and tipped 6 degrees toward the player) and its highlight is lit.
+function _yargKeysAnimate(pressed) {
+  const rig = _yargKeysRig;
+  if (!rig) return;
+  for (const key of rig.keys) {
+    const down = !!pressed[key.lane];
+    key.mesh.position.y = key.baseY - (down ? 0.01 * rig.k : 0);
+    key.mesh.rotation.x = down ? 6 * Math.PI / 180 : 0;
+    rig.highlights[key.lane].visible = down;
+  }
 }

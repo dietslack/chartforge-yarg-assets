@@ -7,7 +7,12 @@ yargnotes-data.js) are a modified form of those assets and stay under the
 same license.
 
 Usage:
-  convert_yarg_notes.py <YARG checkout> <output yargnotes-data.js>
+  convert_yarg_notes.py <YARG checkout> <output yargnotes-data.js> [existing yargnotes-data.js]
+
+With an existing data file given, the models and textures it already holds
+are kept exactly as they are and only the missing ones are converted (assimp
+versions triangulate some faces in a different order, which would otherwise
+rewrite models that have not changed).
 
 Needs the `assimp` command line tool (FBX -> triangulated assjson) and Pillow.
 
@@ -38,6 +43,7 @@ TEX_DIR = 'Assets/Art/Textures'
 #          [, scale of the parent object, applied after the rotation
 #          [, rotation of the parent object]])
 SWAP = (0.0, 0.70710677, 0.70710677, 0.0)
+KEYS_ROT = (-0.7071068, 0.0, 0.0, 0.7071068)
 MODELS = {
     # Five Fret Notes
     'normal': ('Notes/Rectangular/NormalNote.fbx', (5.0, 3.75, 7.0), SWAP, ['metal', 'middle', 'glow']),
@@ -69,6 +75,22 @@ MODELS = {
     # a scale and a 3 degree lean.
     'fret':   ('Frets/RectangularFret.fbx', (19.735, 10.531, 8.02), (0.0, 0.7098, 0.7043, 0.0),
                ['fretMetal', 'fretOuter', 'fretInner'], (1.01, 1.29, 1.0), (0.026, 0.0, 0.0, 0.99966)),
+    # Pro Keys Notes (white key, black key and glissando notes). Slots:
+    # NoteMetal, KeysGlow, NoteGlow, Keys(White|Black)Middle; the glissando
+    # note has no KeysGlow slot.
+    'keysWhite': ('Notes/Rectangular/KeysWhiteNote.fbx', (3.75, 3.75, 6.0), KEYS_ROT, ['metal', 'keysGlow', 'glow', 'middle']),
+    'keysBlack': ('Notes/Rectangular/KeysBlackNote.fbx', (2.8, 3.75, 6.0), KEYS_ROT, ['metal', 'keysGlow', 'glow', 'middle']),
+    'keysGliss': ('Notes/Rectangular/KeysGlissandoNote.fbx', (3.75, 3.75, 6.0), KEYS_ROT, ['metal', 'glow', 'middle']),
+    # Pro Keys strikeline keys ("White Key" / "Black Key" in the theme prefab)
+    'whiteKey': ('Frets/RectangularWhiteKey.fbx', (9.727711, 10.998705, 2.4210591),
+                 (-0.0000020787118, -0.7071067, -0.7071069, 0.0000020712612), ['key']),
+    'blackKey': ('Frets/RectangularBlackKey.fbx', (5.454627, 7.3835773, 2.2142143),
+                 (-0.0000020787118, 0.7071067, 0.7071069, 0.0000020712612), ['key']),
+    # Pro Keys chord bar (ProKeysChordBar.prefab): a middle piece stretched
+    # between the chord's outer notes and an end piece on each side (the left
+    # one is this model mirrored)
+    'chordBar':    ('Track/KeysChordBar.fbx', (3.02, 5.15, 5.9929314), KEYS_ROT, ['bar', 'bar']),
+    'chordBarEnd': ('Track/KeysChordBarEnd.fbx', (5.882499, 5.1499996, 5.9929304), KEYS_ROT, ['bar', 'bar']),
 }
 
 TEXTURES = {
@@ -86,6 +108,15 @@ TEXTURES = {
     'kickFret':    ('Gameplay/Frets/RectangularKickFret.png', 512),
     # Fret hit flash: a 2 x 10 sprite sheet (560 x 1860 in YARG)
     'fretFlash':   ('Gameplay/Particles/FretHit_Flash.png', (256, 1024)),
+    # Particle sprites (each system's Texture Sheet Animation sprite): the
+    # Shards' glass shard (248 x 220), the Sparkles' streak (32 x 32), the
+    # Ring's ring (159 x 159), Smoke and White Smoke's glow (1000 x 1000) and
+    # the sustain particles' star (32 x 32)
+    'fretShard':   ('Gameplay/Particles/FretHit_Shard2.png', (248, 220)),
+    'sparkle':     ('Gameplay/Particles/Sparkle2.png', 32),
+    'fretRing':    ('Gameplay/Particles/FretHit_Ring.png', 128),
+    'fretBig':     ('Gameplay/Particles/FretHit_Big.png', 256),
+    'sparkleStar': ('Gameplay/Particles/Sparkle.png', 32),
     # Kick flash frames (1366 x 489 in YARG), in the order BaseVisual.prefab
     # lists them on KickFretFlash; they play at 50 frames a second
     'kickFlash1':  ('Gameplay/Particles/KickFlash/KickFlash1.png', (512, 256)),
@@ -94,6 +125,13 @@ TEXTURES = {
     'kickFlash4':  ('Gameplay/Particles/KickFlash/KickFlash4.png', (512, 256)),
     'kickFlash5':  ('Gameplay/Particles/KickFlash/KickFlash5.png', (512, 256)),
     'kickFlash6':  ('Gameplay/Particles/KickFlash/KickFlash6.png', (512, 256)),
+    # Pro Keys: strikeline keys, the track overlay's edge and held gradients,
+    # and the range shift arrows (389 x 128 in YARG)
+    'whiteKey':    ('Gameplay/Frets/RectangularWhiteKey.png', 512),
+    'blackKey':    ('Gameplay/Frets/RectangularBlackKey.png', 512),
+    'proKeyEdge':  ('Gameplay/Track/ProKeyEdge.png', (64, 128)),
+    'proKeyPress': ('Gameplay/Track/ProKeyPress.png', (128, 256)),
+    'rangeShift':  ('Gameplay/Track/RangeShiftIndicator.png', (389, 128)),
 }
 
 
@@ -174,7 +212,9 @@ def convert_model(yarg, fbx, scale, rot, roles, parent_scale=(1.0, 1.0, 1.0), pa
     r4 = lambda x: round(x, 4)
     # y0: height of the model's lowest point above its own origin before it
     # was rested on y = 0 (used to stand the fret where YARG's prefab puts it)
-    model = {'w': r4(hi[0] - lo[0]), 'h': r4(hi[1] - lo[1]), 'd': r4(hi[2] - lo[2]), 'y0': r4(lo[1]), 'parts': []}
+    # c: where the model's own origin was on x/z before it was centred
+    model = {'w': r4(hi[0] - lo[0]), 'h': r4(hi[1] - lo[1]), 'd': r4(hi[2] - lo[2]), 'y0': r4(lo[1]),
+             'c': [r4(-cx), r4(-cz)], 'parts': []}
     for part in parts:
         model['parts'].append({
             'role': part['role'],
@@ -250,11 +290,19 @@ def convert_texture(yarg, rel, size):
 
 def main():
     yarg, out = sys.argv[1], sys.argv[2]
-    models = {k: convert_model(yarg, *spec) for k, spec in MODELS.items()}
+    old_models, old_textures = {}, {}
+    if len(sys.argv) > 3:
+        import re
+        text = open(sys.argv[3]).read()
+        old_models = json.loads(re.search(r'const YARG_NOTE_MODEL = (.*);\n', text).group(1))
+        old_textures = json.loads(re.search(r'const YARG_NOTE_TEX = (.*);\n', text).group(1))
+    models = {k: old_models[k] if k in old_models else convert_model(yarg, *spec) for k, spec in MODELS.items()}
     # Kept at its own origin (the "Kick Fret Position" on the strikeline,
     # x = -1.015 for the left one; the right one is the same model mirrored)
-    models['kickFret'] = convert_kick_fret(yarg)
-    textures = {k: convert_texture(yarg, *spec) for k, spec in TEXTURES.items()}
+    models['kickFret'] = old_models.get('kickFret') or convert_kick_fret(yarg)
+    # Same key order as before, so an unchanged model stays where it was in the file
+    models = {**{k: models[k] for k in old_models if k in models}, **{k: v for k, v in models.items() if k not in old_models}}
+    textures = {k: old_textures[k] if k in old_textures else convert_texture(yarg, *spec) for k, spec in TEXTURES.items()}
     with open(out, 'w') as f:
         f.write('// Note models and textures from YARG (https://github.com/YARC-Official/YARG),\n')
         f.write('// rectangular theme. Copyright (C) the YARG contributors, licensed under the\n')
